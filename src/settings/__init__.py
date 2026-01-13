@@ -26,6 +26,11 @@ class Settings:
             "start_with_system": True,
             "auto_update": True,
             "pre_releases": False,
+            # Discord integration settings
+            "discord_mode": "rich_presence",  # "rich_presence", "webhook", or "user_token"
+            "discord_client_id": "881950079240536135",  # Default Discord.fm app ID
+            "discord_webhook_url": "",  # Webhook URL for standalone mode
+            "discord_user_token": "",  # User token for direct presence updates
         }
 
         try:

@@ -24,6 +24,7 @@ dependencies = [
     "pystray>=0.19.5",
     "pywin32>=306 ; sys_platform == 'win32'",
     "requests>=2.32.3",
+    "websocket-client>=1.7.0",
     "pyinstaller>=6.11.1",
 ]
 

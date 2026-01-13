@@ -10,14 +10,17 @@ logger = logging.getLogger("discord_fm").getChild(__name__)
 
 
 class DiscordRP:
-    def __init__(self):
+    DEFAULT_CLIENT_ID = "881950079240536135"
+
+    def __init__(self, client_id: str = None):
         self.presence: Presence | None = None
         self.last_track = None
         self.connected = False
+        self.client_id = client_id or self.DEFAULT_CLIENT_ID
 
     def start(self):
         asyncio.set_event_loop(asyncio.new_event_loop())
-        self.presence = Presence("881950079240536135")
+        self.presence = Presence(self.client_id)
 
     def connect(self):
         if self.presence is None:

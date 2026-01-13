@@ -22,6 +22,8 @@ from process import executable_info
 from util.scrobble_status import ScrobbleStatus
 from util.status import Status
 from wrappers import discord_rp
+from wrappers import discord_webhook
+from wrappers import discord_gateway
 from wrappers import system_tray_icon
 
 logger = logging.getLogger("discord_fm").getChild(__name__)
@@ -45,7 +47,29 @@ class AppManager:
 
         self.tray_icon = system_tray_icon.SystemTrayIcon(self)
         self.loop = loop_handler.LoopHandler(self)
-        self.discord_rp = discord_rp.DiscordRP()
+
+        # Initialize Discord handler based on mode setting
+        self.discord_mode = self.settings.get("discord_mode")
+        if self.discord_mode == "webhook":
+            webhook_url = self.settings.get("discord_webhook_url")
+            if not webhook_url:
+                logger.warning("Webhook mode selected but no webhook URL configured, falling back to rich_presence")
+                self.discord_mode = "rich_presence"
+                self.discord_rp = discord_rp.DiscordRP(self.settings.get("discord_client_id"))
+            else:
+                self.discord_rp = discord_webhook.DiscordWebhook(webhook_url)
+        elif self.discord_mode == "user_token":
+            user_token = self.settings.get("discord_user_token")
+            if not user_token:
+                logger.warning("User token mode selected but no token configured, falling back to rich_presence")
+                self.discord_mode = "rich_presence"
+                self.discord_rp = discord_rp.DiscordRP(self.settings.get("discord_client_id"))
+            else:
+                self.discord_rp = discord_gateway.DiscordGateway(
+                    user_token, self.settings.get("discord_client_id")
+                )
+        else:
+            self.discord_rp = discord_rp.DiscordRP(self.settings.get("discord_client_id"))
 
     def get_debug(self) -> bool:
         return self.settings.get("debug")
@@ -179,6 +203,31 @@ class AppManager:
         logger.info(f"Changed state to {self.rpc_state}")
 
     def wait_for_discord(self, next_status: Status):
+        # In webhook mode, we don't need to wait for Discord
+        if self.discord_mode == "webhook":
+            try:
+                self.discord_rp.connect()
+                self.status = next_status
+                self.tray_icon.update_tray_icon()
+                return
+            except ValueError as e:
+                logger.error(f"Failed to initialize webhook: {e}")
+                self.status = Status.DISABLED
+                return
+
+        # In user_token mode, connect directly to Discord Gateway
+        if self.discord_mode == "user_token":
+            try:
+                self.discord_rp.connect()
+                self.status = next_status
+                self.tray_icon.update_tray_icon()
+                logger.info("Connected to Discord via user token")
+                return
+            except Exception as e:
+                logger.error(f"Failed to connect to Discord Gateway: {e}")
+                self.status = Status.DISABLED
+                return
+
         self.status = Status.WAITING_FOR_DISCORD
         self.tray_icon.update_tray_icon()
 

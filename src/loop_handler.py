@@ -4,6 +4,7 @@ from sched import scheduler
 
 from PIL import Image
 from pypresence import PipeClosed
+import requests
 
 import util
 from util.scrobble_status import ScrobbleStatus
@@ -52,7 +53,9 @@ class LoopHandler:
         elif self.m.status == Status.KILL:
             return
 
-        self._check_discord_running()
+        # Only check Discord running status in rich_presence mode
+        if self.m.discord_mode == "rich_presence":
+            self._check_discord_running()
 
         try:
             track = self.user.now_playing()
@@ -76,7 +79,11 @@ class LoopHandler:
             AttributeError,
             AssertionError,
         ):
-            self._check_discord_running()
+            # Only check Discord running in rich_presence mode
+            if self.m.discord_mode == "rich_presence":
+                self._check_discord_running()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Webhook request failed: {e}")
 
         if self.m.status != Status.KILL:
             self.m.tray_icon.update_tray_icon()

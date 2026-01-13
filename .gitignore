@@ -210,3 +210,6 @@ Pipfile.lock
 build-dir/
 pyinstaller/
 Pipfile.lock
+
+# Sensitive files
+token

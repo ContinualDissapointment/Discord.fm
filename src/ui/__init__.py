@@ -75,6 +75,12 @@ class SettingsWindow(Tk):
             "write",
             lambda: self.m.settings.define("pre_releases", self.pre_releases.get()),
         )
+
+        # Discord settings
+        self.discord_mode = StringVar(value=self.m.settings.get("discord_mode"))
+        self.discord_client_id = StringVar(value=self.m.settings.get("discord_client_id"))
+        self.discord_webhook_url = StringVar(value=self.m.settings.get("discord_webhook_url"))
+        self.discord_user_token = StringVar(value=self.m.settings.get("discord_user_token"))
         # endregion
 
         # region Username
@@ -141,6 +147,73 @@ class SettingsWindow(Tk):
         beta_check.grid(column=0, sticky=W, pady=VERT_PAD)
         # endregion
 
+        # region Discord Settings
+        discord_sep = ttk.Separator(self.root, orient=HORIZONTAL)
+        discord_sep.grid(column=0, sticky=(W, E), pady=(8, 4))
+
+        discord_lbl = ttk.Label(self.root, text="Discord Integration", font=("TkDefaultFont", 9, "bold"))
+        discord_lbl.grid(column=0, sticky=W, pady=(0, 4))
+
+        # Mode selection
+        mode_layout = ttk.Frame(self.root)
+        mode_lbl = ttk.Label(mode_layout, text="Mode", padding=LABEL_PAD)
+        self.mode_rp = ttk.Radiobutton(
+            mode_layout, text="Rich Presence", variable=self.discord_mode, value="rich_presence",
+            command=self._on_mode_change
+        )
+        self.mode_token = ttk.Radiobutton(
+            mode_layout, text="User Token", variable=self.discord_mode, value="user_token",
+            command=self._on_mode_change
+        )
+        self.mode_webhook = ttk.Radiobutton(
+            mode_layout, text="Webhook", variable=self.discord_mode, value="webhook",
+            command=self._on_mode_change
+        )
+        mode_lbl.pack(side=LEFT)
+        self.mode_rp.pack(side=LEFT, padx=(0, 8))
+        self.mode_token.pack(side=LEFT, padx=(0, 8))
+        self.mode_webhook.pack(side=LEFT)
+        mode_layout.grid(column=0, sticky=W, pady=VERT_PAD)
+
+        # Client ID (for Rich Presence mode)
+        clientid_layout = ttk.Frame(self.root)
+        clientid_lbl = ttk.Label(clientid_layout, text="Client ID", padding=LABEL_PAD)
+        self.clientid_input = ttk.Entry(clientid_layout, textvariable=self.discord_client_id, width=25)
+        clientid_lbl.grid(column=0, row=0)
+        self.clientid_input.grid(column=1, row=0, sticky=(W, E))
+        clientid_layout.columnconfigure(1, weight=10)
+        clientid_layout.grid(column=0, sticky=(W, E), pady=VERT_PAD)
+
+        # User Token (for User Token mode)
+        token_layout = ttk.Frame(self.root)
+        token_lbl = ttk.Label(token_layout, text="User Token", padding=LABEL_PAD)
+        self.token_input = ttk.Entry(token_layout, textvariable=self.discord_user_token, width=25, show="*")
+        token_lbl.grid(column=0, row=0)
+        self.token_input.grid(column=1, row=0, sticky=(W, E))
+        token_layout.columnconfigure(1, weight=10)
+        token_layout.grid(column=0, sticky=(W, E), pady=VERT_PAD)
+
+        # Webhook URL (for Webhook mode)
+        webhook_layout = ttk.Frame(self.root)
+        webhook_lbl = ttk.Label(webhook_layout, text="Webhook URL", padding=LABEL_PAD)
+        self.webhook_input = ttk.Entry(webhook_layout, textvariable=self.discord_webhook_url, width=25)
+        webhook_lbl.grid(column=0, row=0)
+        self.webhook_input.grid(column=1, row=0, sticky=(W, E))
+        webhook_layout.columnconfigure(1, weight=10)
+        webhook_layout.grid(column=0, sticky=(W, E), pady=VERT_PAD)
+
+        # Initial state based on mode
+        self._update_discord_fields_state()
+
+        discord_note = ttk.Label(
+            self.root,
+            text="Note: Changes require app restart",
+            foreground="gray",
+            font=("TkDefaultFont", 8)
+        )
+        discord_note.grid(column=0, sticky=W, pady=(0, 4))
+        # endregion
+
         # region Buttons
         logs_btn = ttk.Button(
             self.root,
@@ -186,6 +259,7 @@ class SettingsWindow(Tk):
         self.debounce.cancel()
 
         self.m.settings.define("username", self.username.get())
+        self._save_discord_settings()
         self.destroy()
 
     def _set_start_with_system(self, v1, v2, v3):
@@ -228,3 +302,28 @@ class SettingsWindow(Tk):
             logger.debug("Username is invalid")
             self.usr_status_text.set("Invalid username")
             return False
+
+    def _on_mode_change(self):
+        mode = self.discord_mode.get()
+        self.m.settings.define("discord_mode", mode)
+        self._update_discord_fields_state()
+
+    def _update_discord_fields_state(self):
+        mode = self.discord_mode.get()
+        if mode == "rich_presence":
+            self.clientid_input.configure(state=NORMAL)
+            self.token_input.configure(state=DISABLED)
+            self.webhook_input.configure(state=DISABLED)
+        elif mode == "user_token":
+            self.clientid_input.configure(state=NORMAL)
+            self.token_input.configure(state=NORMAL)
+            self.webhook_input.configure(state=DISABLED)
+        else:  # webhook
+            self.clientid_input.configure(state=DISABLED)
+            self.token_input.configure(state=DISABLED)
+            self.webhook_input.configure(state=NORMAL)
+
+    def _save_discord_settings(self):
+        self.m.settings.define("discord_client_id", self.discord_client_id.get())
+        self.m.settings.define("discord_webhook_url", self.discord_webhook_url.get())
+        self.m.settings.define("discord_user_token", self.discord_user_token.get())
