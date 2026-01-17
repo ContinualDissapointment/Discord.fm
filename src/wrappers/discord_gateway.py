@@ -28,6 +28,9 @@ class DiscordGateway:
         self.connected = False
         self.last_track = None
         self._stop_heartbeat = threading.Event()
+        self._reconnect_lock = threading.Lock()
+        self._max_reconnect_attempts = 5
+        self._reconnect_delay = 5  # seconds
 
     def connect(self):
         if not self.token:
@@ -90,8 +93,46 @@ class DiscordGateway:
             except Exception as e:
                 logger.error(f"Heartbeat failed: {e}")
                 self.connected = False
+                self._attempt_reconnect()
                 break
             self._stop_heartbeat.wait(self.heartbeat_interval)
+
+    def _attempt_reconnect(self):
+        """Attempt to reconnect to Discord Gateway with exponential backoff."""
+        with self._reconnect_lock:
+            if self.connected:
+                return True
+
+            for attempt in range(1, self._max_reconnect_attempts + 1):
+                delay = self._reconnect_delay * attempt
+                logger.info(f"Reconnection attempt {attempt}/{self._max_reconnect_attempts} in {delay}s...")
+                time.sleep(delay)
+
+                try:
+                    # Clean up old connection
+                    if self.ws:
+                        try:
+                            self.ws.close()
+                        except Exception:
+                            pass
+                    self._stop_heartbeat.set()
+
+                    # Reconnect
+                    self.connect()
+
+                    # Resend last track if we had one
+                    if self.last_track:
+                        old_track = self.last_track
+                        self.last_track = None  # Force resend
+                        self.update_status(old_track)
+
+                    logger.info("Reconnected successfully")
+                    return True
+                except Exception as e:
+                    logger.error(f"Reconnection attempt {attempt} failed: {e}")
+
+            logger.error("All reconnection attempts failed")
+            return False
 
     def clear_presence(self):
         if not self.connected or not self.ws:
@@ -128,8 +169,9 @@ class DiscordGateway:
 
     def update_status(self, track: track_info.TrackInfo):
         if not self.connected or not self.ws:
-            logger.warning("Not connected to Discord Gateway")
-            return
+            logger.warning("Not connected to Discord Gateway, attempting reconnect...")
+            if not self._attempt_reconnect():
+                return
 
         if self.last_track == track:
             logger.debug(f"Track {track.name} is the same as last track, not updating")
@@ -173,3 +215,10 @@ class DiscordGateway:
         except Exception as e:
             logger.error(f"Failed to update presence: {e}")
             self.connected = False
+            # Try to reconnect and resend
+            if self._attempt_reconnect():
+                try:
+                    self.ws.send(json.dumps(presence_update))
+                    logger.debug("Presence updated after reconnect")
+                except Exception:
+                    pass
