@@ -9,6 +9,16 @@ from wrappers import track_info
 
 logger = logging.getLogger("discord_fm").getChild(__name__)
 
+# Try to import DBus for sleep/wake detection
+try:
+    import gi
+    gi.require_version('Gio', '2.0')
+    from gi.repository import Gio, GLib
+    DBUS_AVAILABLE = True
+except Exception:
+    DBUS_AVAILABLE = False
+    logger.debug("DBus not available for sleep/wake detection")
+
 DISCORD_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
 
@@ -24,13 +34,20 @@ class DiscordGateway:
         self.ws = None
         self.heartbeat_interval = None
         self.heartbeat_thread = None
+        self.monitor_thread = None
+        self.sleep_listener_thread = None
         self.last_sequence = None
         self.connected = False
         self.last_track = None
         self._stop_heartbeat = threading.Event()
+        self._stop_monitor = threading.Event()
         self._reconnect_lock = threading.Lock()
-        self._max_reconnect_attempts = 5
-        self._reconnect_delay = 5  # seconds
+        self._reconnect_delay = 10  # seconds between attempts
+        self._monitor_interval = 30  # seconds between connection checks
+        self._dbus_loop = None
+
+        # Start sleep/wake listener
+        self._start_sleep_listener()
 
     def connect(self):
         if not self.token:
@@ -84,6 +101,12 @@ class DiscordGateway:
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
 
+        # Start connection monitor (only once)
+        if self.monitor_thread is None or not self.monitor_thread.is_alive():
+            self._stop_monitor.clear()
+            self.monitor_thread = threading.Thread(target=self._connection_monitor, daemon=True)
+            self.monitor_thread.start()
+
     def _heartbeat_loop(self):
         while not self._stop_heartbeat.is_set():
             try:
@@ -97,42 +120,92 @@ class DiscordGateway:
                 break
             self._stop_heartbeat.wait(self.heartbeat_interval)
 
+    def _connection_monitor(self):
+        """Background thread that monitors connection and reconnects indefinitely."""
+        logger.info("Connection monitor started")
+        while not self._stop_monitor.is_set():
+            self._stop_monitor.wait(self._monitor_interval)
+
+            if self._stop_monitor.is_set():
+                break
+
+            if not self.connected:
+                logger.info("Connection monitor: Not connected, attempting reconnect...")
+                self._attempt_reconnect()
+
     def _attempt_reconnect(self):
-        """Attempt to reconnect to Discord Gateway with exponential backoff."""
+        """Attempt to reconnect to Discord Gateway."""
         with self._reconnect_lock:
             if self.connected:
                 return True
 
-            for attempt in range(1, self._max_reconnect_attempts + 1):
-                delay = self._reconnect_delay * attempt
-                logger.info(f"Reconnection attempt {attempt}/{self._max_reconnect_attempts} in {delay}s...")
-                time.sleep(delay)
+            logger.info(f"Attempting to reconnect...")
 
-                try:
-                    # Clean up old connection
-                    if self.ws:
-                        try:
-                            self.ws.close()
-                        except Exception:
-                            pass
-                    self._stop_heartbeat.set()
+            try:
+                # Clean up old connection
+                if self.ws:
+                    try:
+                        self.ws.close()
+                    except Exception:
+                        pass
+                self._stop_heartbeat.set()
 
-                    # Reconnect
-                    self.connect()
+                time.sleep(self._reconnect_delay)
 
-                    # Resend last track if we had one
-                    if self.last_track:
-                        old_track = self.last_track
-                        self.last_track = None  # Force resend
-                        self.update_status(old_track)
+                # Reconnect
+                self.connect()
 
-                    logger.info("Reconnected successfully")
-                    return True
-                except Exception as e:
-                    logger.error(f"Reconnection attempt {attempt} failed: {e}")
+                # Resend last track if we had one
+                if self.last_track:
+                    old_track = self.last_track
+                    self.last_track = None  # Force resend
+                    self.update_status(old_track)
 
-            logger.error("All reconnection attempts failed")
-            return False
+                logger.info("Reconnected successfully")
+                return True
+            except Exception as e:
+                logger.error(f"Reconnection failed: {e}")
+                return False
+
+    def _start_sleep_listener(self):
+        """Start listening for system sleep/wake events via DBus."""
+        if not DBUS_AVAILABLE:
+            logger.info("DBus not available, sleep/wake detection disabled")
+            return
+
+        def on_prepare_for_sleep(connection, sender, path, interface, signal, params):
+            """Called when system is about to sleep or has just woken up."""
+            going_to_sleep = params.unpack()[0]
+            if going_to_sleep:
+                logger.info("System going to sleep, marking as disconnected")
+                self.connected = False
+            else:
+                logger.info("System woke up, triggering immediate reconnect")
+                # Give network a moment to come back up
+                time.sleep(2)
+                self._attempt_reconnect()
+
+        def run_dbus_listener():
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+                bus.signal_subscribe(
+                    "org.freedesktop.login1",
+                    "org.freedesktop.login1.Manager",
+                    "PrepareForSleep",
+                    "/org/freedesktop/login1",
+                    None,
+                    Gio.DBusSignalFlags.NONE,
+                    on_prepare_for_sleep,
+                    None
+                )
+                logger.info("Sleep/wake listener started")
+                self._dbus_loop = GLib.MainLoop()
+                self._dbus_loop.run()
+            except Exception as e:
+                logger.error(f"Failed to start sleep listener: {e}")
+
+        self.sleep_listener_thread = threading.Thread(target=run_dbus_listener, daemon=True)
+        self.sleep_listener_thread.start()
 
     def clear_presence(self):
         if not self.connected or not self.ws:
@@ -158,6 +231,9 @@ class DiscordGateway:
 
     def exit_rp(self):
         self._stop_heartbeat.set()
+        self._stop_monitor.set()
+        if self._dbus_loop:
+            self._dbus_loop.quit()
         self.clear_presence()
         if self.ws:
             try:
