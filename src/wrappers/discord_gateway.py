@@ -39,6 +39,8 @@ class DiscordGateway:
         self.last_sequence = None
         self.connected = False
         self.last_track = None
+        self._last_presence_send = 0  # timestamp of last presence send
+        self._presence_refresh_interval = 120  # re-send presence every 2 minutes
         self._stop_heartbeat = threading.Event()
         self._stop_monitor = threading.Event()
         self._reconnect_lock = threading.Lock()
@@ -281,9 +283,14 @@ class DiscordGateway:
             if not self._attempt_reconnect():
                 return
 
+        now = time.monotonic()
         if self.last_track == track:
-            logger.debug(f"Track {track.name} is the same as last track, not updating")
-            return
+            # Re-send presence periodically to prevent Discord from timing it out
+            if (now - self._last_presence_send) < self._presence_refresh_interval:
+                logger.debug(f"Track {track.name} is the same as last track, not updating")
+                return
+            else:
+                logger.info(f"Refreshing presence for: {track.name}")
 
         logger.info("Now playing: " + track.name)
         self.last_track = track
@@ -319,6 +326,7 @@ class DiscordGateway:
 
         try:
             self.ws.send(json.dumps(presence_update))
+            self._last_presence_send = time.monotonic()
             logger.debug(f"Presence updated (Listening to Last.fm)")
         except Exception as e:
             logger.error(f"Failed to update presence: {e}")
