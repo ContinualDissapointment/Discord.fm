@@ -48,6 +48,8 @@ class DiscordGateway:
         self._monitor_interval = 15  # seconds between connection checks
         self._last_heartbeat_time = 0  # timestamp of last successful heartbeat
         self._last_monitor_time = 0  # timestamp of last monitor check
+        self._last_full_reconnect = 0  # timestamp of last full reconnection
+        self._full_reconnect_interval = 1800  # force reconnect every 30 minutes
         self._dbus_loop = None
 
         # Start sleep/wake listener
@@ -99,6 +101,7 @@ class DiscordGateway:
             logger.info("Successfully connected to Discord Gateway")
             self.connected = True
             self._last_heartbeat_time = time.monotonic()
+            self._last_full_reconnect = time.monotonic()
         else:
             raise ConnectionError(f"Did not receive Ready from Discord Gateway: {ready}")
 
@@ -151,6 +154,13 @@ class DiscordGateway:
                 max_allowed = self.heartbeat_interval * 2.5
                 if time_since_heartbeat > max_allowed:
                     logger.info(f"Connection monitor: Heartbeat stale ({time_since_heartbeat:.0f}s), forcing reconnect")
+                    self.connected = False
+
+            # Force full reconnect periodically to keep session fresh
+            if self.connected and self._last_full_reconnect:
+                time_since_reconnect = now - self._last_full_reconnect
+                if time_since_reconnect > self._full_reconnect_interval:
+                    logger.info(f"Connection monitor: Forcing periodic reconnect ({time_since_reconnect:.0f}s since last)")
                     self.connected = False
 
             if not self.connected:
@@ -291,6 +301,9 @@ class DiscordGateway:
                 return
             else:
                 logger.info(f"Refreshing presence for: {track.name}")
+                # Clear first to force Discord to re-register the activity
+                self.clear_presence()
+                time.sleep(0.5)
 
         logger.info("Now playing: " + track.name)
         self.last_track = track
