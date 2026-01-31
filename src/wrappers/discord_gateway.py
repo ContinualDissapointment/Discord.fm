@@ -42,8 +42,10 @@ class DiscordGateway:
         self._stop_heartbeat = threading.Event()
         self._stop_monitor = threading.Event()
         self._reconnect_lock = threading.Lock()
-        self._reconnect_delay = 10  # seconds between attempts
-        self._monitor_interval = 30  # seconds between connection checks
+        self._reconnect_delay = 5  # seconds before reconnect attempt
+        self._monitor_interval = 15  # seconds between connection checks
+        self._last_heartbeat_time = 0  # timestamp of last successful heartbeat
+        self._last_monitor_time = 0  # timestamp of last monitor check
         self._dbus_loop = None
 
         # Start sleep/wake listener
@@ -56,7 +58,8 @@ class DiscordGateway:
         logger.info("Connecting to Discord Gateway...")
         self.ws = websocket.create_connection(
             DISCORD_GATEWAY_URL,
-            header={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            header={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=10
         )
 
         # Receive Hello
@@ -93,6 +96,7 @@ class DiscordGateway:
             self.last_sequence = ready.get("s")
             logger.info("Successfully connected to Discord Gateway")
             self.connected = True
+            self._last_heartbeat_time = time.monotonic()
         else:
             raise ConnectionError(f"Did not receive Ready from Discord Gateway: {ready}")
 
@@ -112,22 +116,40 @@ class DiscordGateway:
             try:
                 heartbeat = {"op": 1, "d": self.last_sequence}
                 self.ws.send(json.dumps(heartbeat))
+                self._last_heartbeat_time = time.monotonic()
                 logger.debug("Sent heartbeat")
             except Exception as e:
                 logger.error(f"Heartbeat failed: {e}")
                 self.connected = False
-                self._attempt_reconnect()
                 break
             self._stop_heartbeat.wait(self.heartbeat_interval)
 
     def _connection_monitor(self):
-        """Background thread that monitors connection and reconnects indefinitely."""
+        """Background thread that detects stale connections and reconnects."""
         logger.info("Connection monitor started")
         while not self._stop_monitor.is_set():
             self._stop_monitor.wait(self._monitor_interval)
 
             if self._stop_monitor.is_set():
                 break
+
+            now = time.monotonic()
+            time_since_monitor = now - self._last_monitor_time if self._last_monitor_time else 0
+            self._last_monitor_time = now
+
+            # Detect sleep: if time between checks jumped way past the interval,
+            # the system likely slept
+            if time_since_monitor > self._monitor_interval * 3:
+                logger.info(f"Connection monitor: Detected time jump ({time_since_monitor:.0f}s since last check), system likely slept")
+                self.connected = False
+
+            # Check if heartbeat is stale (no successful heartbeat in 2x the interval)
+            if self.connected and self.heartbeat_interval:
+                time_since_heartbeat = now - self._last_heartbeat_time
+                max_allowed = self.heartbeat_interval * 2.5
+                if time_since_heartbeat > max_allowed:
+                    logger.info(f"Connection monitor: Heartbeat stale ({time_since_heartbeat:.0f}s), forcing reconnect")
+                    self.connected = False
 
             if not self.connected:
                 logger.info("Connection monitor: Not connected, attempting reconnect...")
@@ -139,16 +161,17 @@ class DiscordGateway:
             if self.connected:
                 return True
 
-            logger.info(f"Attempting to reconnect...")
+            logger.info("Attempting to reconnect...")
 
             try:
                 # Clean up old connection
+                self._stop_heartbeat.set()
                 if self.ws:
                     try:
                         self.ws.close()
                     except Exception:
                         pass
-                self._stop_heartbeat.set()
+                    self.ws = None
 
                 time.sleep(self._reconnect_delay)
 
@@ -182,8 +205,7 @@ class DiscordGateway:
             else:
                 logger.info("System woke up, triggering immediate reconnect")
                 # Give network a moment to come back up
-                time.sleep(2)
-                self._attempt_reconnect()
+                threading.Thread(target=self._wake_reconnect, daemon=True).start()
 
         def run_dbus_listener():
             try:
@@ -206,6 +228,16 @@ class DiscordGateway:
 
         self.sleep_listener_thread = threading.Thread(target=run_dbus_listener, daemon=True)
         self.sleep_listener_thread.start()
+
+    def _wake_reconnect(self):
+        """Reconnect after system wake with retries."""
+        for attempt in range(1, 6):
+            delay = attempt * 3  # 3s, 6s, 9s, 12s, 15s
+            logger.info(f"Wake reconnect attempt {attempt}/5, waiting {delay}s for network...")
+            time.sleep(delay)
+            if self._attempt_reconnect():
+                return
+        logger.error("Wake reconnect: All attempts failed, monitor will keep trying")
 
     def clear_presence(self):
         if not self.connected or not self.ws:
