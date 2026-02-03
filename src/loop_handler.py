@@ -61,6 +61,9 @@ class LoopHandler:
             track = self.user.now_playing()
         except KeyboardInterrupt:
             return
+        except Exception as e:
+            logger.error(f"Error getting now playing: {e}")
+            track = None
 
         try:
             if track is not None:
@@ -84,6 +87,9 @@ class LoopHandler:
                 self._check_discord_running()
         except requests.exceptions.RequestException as e:
             logger.error(f"Webhook request failed: {e}")
+        except Exception as e:
+            # Catch-all to prevent the update loop from dying
+            logger.error(f"Unexpected error in update loop: {e}")
 
         if self.m.status != Status.KILL:
             self.m.tray_icon.update_tray_icon()
