@@ -200,6 +200,7 @@ spec/fixtures/logo.png
 *.pid
 build/discord_fm*/
 build/settings_ui*/
+build/main*/
 build_temp/
 .flatpak-builder/
 .pipcache/
