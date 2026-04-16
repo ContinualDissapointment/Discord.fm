@@ -3,7 +3,7 @@ name = "Discord.fm"
 authors = [
   { name="Anna Rodrigues", email="me@annarodrigues.net" },
 ]
-version = "0.11.0"
+version = "0.11.1-standalone"
 description = "Show what you're scrobbling on Discord at all times!"
 readme = "README.md"
 requires-python = ">=3.12"
